@@ -1,27 +1,29 @@
 /**
  * Camada de reconhecimento de escrita à mão.
  *
- * A v1 usa a Handwriting Recognition API nativa do navegador (Chrome/Android):
- * ela recebe os traços (pontos x, y, t) capturados no canvas e devolve o texto.
- * Roda offline, é gratuita e privada.
+ * Dois motores, escolhidos automaticamente conforme o navegador:
  *
- * A abstração `RecognitionEngine` foi feita para que, no futuro, seja possível
- * plugar outro motor (ex.: uma API de nuvem como Google Vision) sem mexer na UI:
- * basta criar outro objeto com o mesmo método `recognize(strokes)`.
+ *  1. NATIVO (Handwriting Recognition API) — Chrome desktop/Android.
+ *     Recebe os traços (pontos x, y, t) e devolve o texto. Rápido e preciso.
+ *
+ *  2. TESSERACT.js — funciona em qualquer navegador, inclusive Safari/iPad.
+ *     Faz OCR sobre a IMAGEM do que foi escrito. Roda 100% no dispositivo.
+ *     Melhor com letra de forma; a cursiva é mais difícil.
+ *
+ * Cada motor recebe `{ strokes, getImage }` e usa só o que precisa, então
+ * a interface (App.jsx) não muda ao trocar de motor. No futuro dá para
+ * plugar um motor de nuvem (ex.: Google Vision) do mesmo jeito.
  */
 
-/** Verifica se a API nativa existe neste navegador. */
+/** A API nativa existe neste navegador? (Chrome/Android; não existe no iOS/Safari) */
 export function isNativeSupported() {
   return typeof navigator !== 'undefined' && 'createHandwritingRecognizer' in navigator;
 }
 
-/**
- * Descobre se o navegador consegue reconhecer no idioma pedido.
- * Retorna o idioma utilizável (pode cair para 'en' se 'pt' não existir) ou null.
- */
+/** Idioma reconhecível pela API nativa (cai para 'en' se 'pt' não existir). */
 export async function queryBestLanguage(preferred = ['pt', 'en']) {
   if (!isNativeSupported() || !navigator.queryHandwritingRecognizerSupport) {
-    return isNativeSupported() ? preferred[0] : null;
+    return preferred[0];
   }
   for (const lang of preferred) {
     try {
@@ -34,21 +36,12 @@ export async function queryBestLanguage(preferred = ['pt', 'en']) {
       /* tenta o próximo */
     }
   }
-  return null;
+  return preferred[0];
 }
 
-/**
- * Motor nativo. Converte os traços do canvas no formato da API e devolve
- * o texto reconhecido (mais alternativas, quando disponíveis).
- *
- * @param {Array<Array<{x:number,y:number,t:number}>>} strokes
- * @returns {Promise<{ text: string, alternatives: string[] }>}
- */
-async function recognizeNative(strokes, { language = 'pt' } = {}) {
-  const recognizer = await navigator.createHandwritingRecognizer({
-    languages: [language],
-  });
-
+/* ----------------------- Motor nativo (Chrome) ----------------------- */
+async function recognizeNative({ strokes }, { language = 'pt' } = {}) {
+  const recognizer = await navigator.createHandwritingRecognizer({ languages: [language] });
   const drawing = recognizer.startDrawing({
     languages: [language],
     recognitionType: 'text',
@@ -60,9 +53,7 @@ async function recognizeNative(strokes, { language = 'pt' } = {}) {
   for (const stroke of strokes) {
     if (!stroke.length) continue;
     const hwStroke = new window.HandwritingStroke();
-    for (const p of stroke) {
-      hwStroke.addPoint({ x: p.x, y: p.y, t: p.t });
-    }
+    for (const p of stroke) hwStroke.addPoint({ x: p.x, y: p.y, t: p.t });
     drawing.addStroke(hwStroke);
   }
 
@@ -70,38 +61,48 @@ async function recognizeNative(strokes, { language = 'pt' } = {}) {
   drawing.clear();
   if (recognizer.finish) recognizer.finish();
 
-  if (!predictions || predictions.length === 0) {
-    return { text: '', alternatives: [] };
-  }
-
+  if (!predictions || predictions.length === 0) return { text: '', alternatives: [] };
   return {
-    text: predictions[0].text || '',
+    text: (predictions[0].text || '').trim(),
     alternatives: predictions.slice(1).map((p) => p.text).filter(Boolean),
   };
 }
 
-/**
- * Retorna o motor de reconhecimento adequado ao ambiente.
- * Hoje só existe o nativo; amanhã este ponto escolhe entre nativo/nuvem.
- */
+/* --------------------- Motor Tesseract (iPad etc.) --------------------- */
+// Códigos de idioma do Tesseract diferem da API nativa.
+const TESS_LANG = { pt: 'por', en: 'eng' };
+
+async function recognizeTesseract({ getImage }, { language = 'pt', onProgress } = {}) {
+  const { default: Tesseract } = await import('tesseract.js');
+  const image = await getImage();
+  const lang = TESS_LANG[language] || 'por';
+
+  const { data } = await Tesseract.recognize(image, lang, {
+    logger: (m) => {
+      if (onProgress && m.status === 'recognizing text') onProgress(m.progress);
+    },
+  });
+
+  const text = (data.text || '').replace(/\n{2,}/g, '\n').trim();
+  return { text, alternatives: [] };
+}
+
+/* ---------------------- Seleção automática do motor ---------------------- */
 export function getRecognitionEngine() {
   if (isNativeSupported()) {
     return {
       id: 'native',
       label: 'Reconhecimento nativo (Chrome)',
       available: true,
+      needsImage: false,
       recognize: recognizeNative,
     };
   }
   return {
-    id: 'unsupported',
-    label: 'Não suportado neste navegador',
-    available: false,
-    async recognize() {
-      throw new Error(
-        'Seu navegador não tem reconhecimento de escrita nativo. ' +
-          'Use o Chrome (PC/Android) ou aguarde o suporte à nuvem.'
-      );
-    },
+    id: 'tesseract',
+    label: 'Reconhecimento no dispositivo (Tesseract)',
+    available: true,
+    needsImage: true,
+    recognize: recognizeTesseract,
   };
 }

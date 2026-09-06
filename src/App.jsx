@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from 'react';
-import { Pen, Eraser, Undo2, Sparkles, Loader2, Copy, Check, AlertTriangle } from 'lucide-react';
+import { Pen, Eraser, Undo2, Sparkles, Loader2, Copy, Check, Info } from 'lucide-react';
 import HandwritingCanvas from './components/HandwritingCanvas';
 import { getRecognitionEngine, queryBestLanguage } from './lib/recognizer';
 import './App.css';
@@ -26,6 +26,7 @@ export default function App() {
 
   const [result, setResult] = useState(null); // { text, alternatives }
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState('');
   const [font, setFont] = useState(HANDWRITING_FONTS[0]);
   const [copied, setCopied] = useState(false);
@@ -54,11 +55,18 @@ export default function App() {
       return;
     }
     setBusy(true);
+    setProgress(0);
     try {
-      const strokes = canvasRef.current.getStrokes();
-      const res = await engine.recognize(strokes, { language: language || 'pt' });
+      const input = {
+        strokes: canvasRef.current.getStrokes(),
+        getImage: () => canvasRef.current.toImage(),
+      };
+      const res = await engine.recognize(input, {
+        language: language || 'pt',
+        onProgress: (p) => setProgress(p),
+      });
       if (!res.text) {
-        setError('Não consegui reconhecer a escrita. Tente escrever mais devagar e separado.');
+        setError('Não consegui reconhecer a escrita. Tente escrever mais devagar, em letra de forma.');
       } else {
         setResult(res);
       }
@@ -86,8 +94,6 @@ export default function App() {
     }
   };
 
-  const supportWarning = !checkingSupport && !engine.available;
-
   return (
     <div className="app">
       <header className="app-header">
@@ -98,12 +104,13 @@ export default function App() {
         <p className="tagline">Escreva à mão e transforme em letra bonita ✨</p>
       </header>
 
-      {supportWarning && (
-        <div className="banner warn">
-          <AlertTriangle size={18} />
+      {!checkingSupport && engine.needsImage && (
+        <div className="banner info">
+          <Info size={18} />
           <span>
-            Este navegador não tem reconhecimento de escrita nativo. O quadro funciona,
-            mas para <strong>embelezar a letra</strong> use o <strong>Chrome</strong> (PC/Android).
+            Reconhecimento rodando <strong>no seu dispositivo</strong> (ideal pro iPad).
+            Dica: escreva em <strong>letra de forma</strong>, tamanho médio e sem juntar as letras
+            para o melhor resultado. Letra cursiva é mais difícil.
           </span>
         </div>
       )}
@@ -155,7 +162,11 @@ export default function App() {
 
           <button className="beautify-btn" onClick={handleBeautify} disabled={busy || checkingSupport}>
             {busy ? <Loader2 size={18} className="spin" /> : <Sparkles size={18} />}
-            {busy ? 'Reconhecendo...' : 'Embelezar minha letra'}
+            {busy
+              ? engine.needsImage && progress > 0
+                ? `Reconhecendo... ${Math.round(progress * 100)}%`
+                : 'Reconhecendo...'
+              : 'Embelezar minha letra'}
           </button>
 
           {error && <p className="error-text">{error}</p>}

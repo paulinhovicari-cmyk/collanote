@@ -103,6 +103,23 @@ const HandwritingCanvas = forwardRef(function HandwritingCanvas(
     hasContent() {
       return strokesRef.current.length > 0;
     },
+    /** Gera uma imagem (dataURL) do que foi escrito, com fundo branco, para OCR. */
+    toImage() {
+      const src = canvasRef.current;
+      const rect = src.getBoundingClientRect();
+      const scale = 2; // aumenta a resolução -> OCR mais preciso
+      const off = document.createElement('canvas');
+      off.width = Math.max(1, Math.round(rect.width * scale));
+      off.height = Math.max(1, Math.round(rect.height * scale));
+      const octx = off.getContext('2d');
+      octx.fillStyle = '#ffffff';
+      octx.fillRect(0, 0, off.width, off.height);
+      octx.scale(scale, scale);
+      for (const s of strokesRef.current) {
+        drawSmoothStroke(octx, s.points, { color: s.color, width: s.width });
+      }
+      return off.toDataURL('image/png');
+    },
     clear() {
       strokesRef.current = [];
       currentStroke.current = null;
